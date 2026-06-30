@@ -1,0 +1,32 @@
+[project]
+name = "stock-scanner"
+version = "0.1.0"
+description = "Real-time stock scanner with pluggable data providers"
+requires-python = ">=3.12"
+dependencies = [
+    "rich>=13.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+moomoo = ["moomoo-openD>=1.0"]
+ibkr   = ["ib_insync>=0.9"]
+webull  = ["webull>=0.1"]
+massive    = ["massive"]
+dashboard  = ["streamlit>=1.33", "pandas>=2.0", "massive"]
+dev     = ["pytest>=8.0", "pytest-cov", "ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "scripts*"]
+
+[project.scripts]
+scanner = "main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

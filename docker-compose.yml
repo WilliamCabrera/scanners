@@ -1,0 +1,67 @@
+services:
+  # ── Scanner — live terminal display ─────────────────────────────────────────
+  scanner:
+    build: .
+    command: python main.py
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/New_York
+    volumes:
+      - .:/app
+      - cache_data:/app/.cache
+      - ./logs:/app/logs
+    stdin_open: true
+    tty: true
+
+  # ── Dashboard — Streamlit web UI ─────────────────────────────────────────────
+  dashboard:
+    build: .
+    command: streamlit run dashboard.py
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/New_York
+    ports:
+      - "8505:8505"
+    volumes:
+      - .:/app
+      - cache_data:/app/.cache
+      - ./logs:/app/logs
+    depends_on:
+      - scanner
+
+  # ── Jobs — idle container used by Ofelia for scheduled tasks ─────────────
+  jobs:
+    build: .
+    command: sleep infinity
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/New_York
+    volumes:
+      - .:/app
+      - cache_data:/app/.cache
+      - ./logs:/app/logs
+    labels:
+      ofelia.enabled: "true"
+      # Refresh previous-day OHLC every weekday at 3:00 AM ET
+      ofelia.job-exec.refresh-daily-store.schedule: "0 0 3 * * 1-5"
+      ofelia.job-exec.refresh-daily-store.command: sh -c "cd /app && PYTHONPATH=/app python scripts/refresh_daily_store.py"
+      ofelia.job-exec.refresh-daily-store.save-folder: /app/logs/ofelia
+
+  # ── Ofelia — cron scheduler ───────────────────────────────────────────────
+  ofelia:
+    image: mcuadros/ofelia:latest
+    restart: unless-stopped
+    environment:
+      TZ: America/New_York
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./logs/ofelia:/logs
+    command: daemon --docker
+    depends_on:
+      - jobs
+
+volumes:
+  cache_data:
