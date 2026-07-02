@@ -1,0 +1,87 @@
+[
+  {
+    "strategy_name": "backside_short_lower_low_fix_stop_iterative",
+    "instance_name": "backside_short_lower_low_fix_stop_iterative_0.4_0.5_0.2",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.50, "tp_pct": 0.20}
+  },
+  {
+    "strategy_name": "backside_short_lower_low_hod_stop_iterative",
+    "instance_name": "backside_short_lower_low_hod_stop_iterative_0.4_0.1_0.2",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.10, "tp_pct": 0.20}
+  },
+  {
+    "strategy_name": "backside_short_lower_low_hod_stop_iterative",
+    "instance_name": "backside_short_lower_low_hod_stop_iterative_0.4_0.1_1.0",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.10, "tp_pct": 1.0}
+  },
+  {
+    "strategy_name": "gap_crap_iterative",
+    "instance_name": "gap_crap_iterative_0.4_0.5_0.2",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.50, "tp_pct": 0.20}
+  },
+  {
+    "strategy_name": "short_push_exhaustion_iterative",
+    "instance_name": "short_push_exhaustion_iterative_0.4_0.5_0.2",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.50, "tp_pct": 0.20}
+  },
+  {
+    "strategy_name": "short_push_exhaustion_hod_stop_iterative",
+    "instance_name": "short_push_exhaustion_hod_stop_iterative_0.4_0.1_1.0",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.10, "tp_pct": 1.0}
+  },
+  {
+    "strategy_name": "push_rejection_iterative",
+    "instance_name": "push_rejection_iterative_0.4_0.5_0.2",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.50, "tp_pct": 0.20}
+  },
+  {
+    "strategy_name": "push_rejection_hod_stop_iterative",
+    "instance_name": "push_rejection_hod_stop_iterative_0.4_0.1_1.0",
+    "params": {"gap_pct": 0.40, "stop_pct": 0.10, "tp_pct": 1.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_iterative",
+    "instance_name": "sma9_momentum_long_iterative_0.08_0.80_10.0_1h",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 0.80, "min_volume": 40000, "target_rr": 10.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_iterative",
+    "instance_name": "sma9_momentum_long_iterative_0.08_1.80_1.0",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 1.80, "min_volume": 40000, "target_rr": 1.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_iterative",
+    "instance_name": "sma9_momentum_long_iterative_0.08_1.80_2.0",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 1.80, "min_volume": 40000, "target_rr": 2.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_iterative",
+    "instance_name": "sma9_momentum_long_iterative_0.08_1.80_3.0",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 1.80, "min_volume": 40000, "target_rr": 3.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_dynrr_iterative",
+    "instance_name": "sma9_momentum_long_dynrr_iterative_0.08_0.80_1h",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 0.80, "min_volume": 40000, "max_hold_hours": 1.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_bar_sl_iterative",
+    "instance_name": "sma9_momentum_long_bar_sl_iterative_0.08_0.80_10.0_1h",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 0.80, "min_volume": 40000, "target_rr": 10.0, "max_hold_hours": 1.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_bar_sl_iterative",
+    "instance_name": "sma9_momentum_long_bar_sl_iterative_0.08_1.80_1.0",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 1.80, "min_volume": 40000, "target_rr": 1.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_bar_sl_iterative",
+    "instance_name": "sma9_momentum_long_bar_sl_iterative_0.08_1.80_2.0",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 1.80, "min_volume": 40000, "target_rr": 2.0}
+  },
+  {
+    "strategy_name": "sma9_momentum_long_bar_sl_iterative",
+    "instance_name": "sma9_momentum_long_bar_sl_iterative_0.08_1.80_3.0",
+    "params": {"min_dist_pct": 0.08, "max_dist_pct": 1.80, "min_volume": 40000, "target_rr": 3.0}
+  }
+]

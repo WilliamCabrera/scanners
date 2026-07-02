@@ -70,6 +70,8 @@ class MassiveProvider(DataProvider):
         self._client = None
         self._thread: Optional[threading.Thread] = None
         self._connected = False
+        # Optional callback fired on every accepted bar: (sym, open, high, low, close, volume, end_ms)
+        self._on_raw_bar = None
 
     # ── DataProvider interface ────────────────────────────────────────────────
 
@@ -124,6 +126,13 @@ class MassiveProvider(DataProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         return self._cache[symbol]
+
+    def set_raw_bar_callback(self, fn) -> None:
+        """Register a callback fired for every accepted WebSocket bar.
+
+        Signature: fn(sym, open, high, low, close, volume, end_ms)
+        """
+        self._on_raw_bar = fn
 
     def get_quotes(self, symbols: list[str]) -> list[Quote]:
         if "*" in symbols:
@@ -218,3 +227,18 @@ class MassiveProvider(DataProvider):
             if not quote.market_open and self._premarket_store:
                 self._premarket_store.update(sym, quote.accumulated_volume)
             log.debug("%s %s: close=%.4f", self._ev, sym, quote.last)
+            if self._on_raw_bar:
+                end_ms = getattr(msg, "end_timestamp", None)
+                if end_ms:
+                    try:
+                        self._on_raw_bar(
+                            sym,
+                            float(getattr(msg, "open",   quote.last)),
+                            float(getattr(msg, "high",   quote.last)),
+                            float(getattr(msg, "low",    quote.last)),
+                            quote.last,
+                            quote.volume,
+                            int(end_ms),
+                        )
+                    except Exception as exc:
+                        log.debug("raw_bar callback error for %s: %s", sym, exc)

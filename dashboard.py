@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 
 from scanner.config.settings import Settings
+from scanner.core.candle_cache import CandleCache
 from scanner.core.models import Quote, ScanResult
 from scanner.core.scanner import Scanner, _SORT_FIELDS, DEFAULT_SORT
 from scanner.providers import get_provider
@@ -41,6 +42,7 @@ _state_lock   = threading.Lock()
 _results:      dict[str, list[ScanResult]] = {}
 _last_update:  dict[str, datetime]         = {}
 _started       = threading.Event()
+_candle_cache: CandleCache | None          = None
 
 _snap_regular:    list[ScanResult]   = []
 _snap_regular_ts: Optional[datetime] = None
@@ -132,8 +134,12 @@ def _get_live() -> tuple[dict[str, list[ScanResult]], dict[str, datetime]]:
         )
 
 
+def _get_candle_cache() -> CandleCache | None:
+    return _candle_cache
+
+
 def _start_scanner(settings: Settings) -> None:
-    global _snap_regular, _snap_regular_ts, _snap_ah, _snap_ah_ts
+    global _snap_regular, _snap_regular_ts, _snap_ah, _snap_ah_ts, _candle_cache
     if _started.is_set():
         return
     _started.set()
@@ -143,8 +149,17 @@ def _start_scanner(settings: Settings) -> None:
 
     threading.Thread(target=_snapshot_saver_loop, daemon=True, name="snapshot-saver").start()
 
+    if settings.massive_api_key:
+        _candle_cache = CandleCache(
+            api_key=settings.massive_api_key,
+            get_results_fn=lambda: {ac: list(r) for ac, r in _results.items()},
+        )
+
     for ac in settings.massive_asset_classes:
         p = get_provider(settings.provider, settings, asset_class=ac)
+        # Register candle cache as raw-bar listener (stocks only, MassiveProvider only)
+        if _candle_cache is not None and ac == "stocks" and hasattr(p, "set_raw_bar_callback"):
+            p.set_raw_bar_callback(_candle_cache.on_raw_bar)
         p.connect()
         s = Scanner(
             provider=p,
@@ -293,6 +308,45 @@ def _style_df(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     styled   = df.style
     if present:
         styled = styled.map(pct_color, subset=present)
+    return styled.hide(axis="index")
+
+
+def _style_signals_df(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    """Color Type, Trade Status and P&L % columns."""
+
+    def type_color(val) -> str:
+        if val == "long":  return "color: #00cc66; font-weight: bold"
+        if val == "short": return "color: #ff4455; font-weight: bold"
+        return ""
+
+    def status_color(val) -> str:
+        if val == "open":    return "color: #f0c040; font-weight: bold"
+        if val == "tp":      return "color: #00cc66; font-weight: bold"
+        if val == "sl":      return "color: #ff4455; font-weight: bold"
+        if val == "timeout": return "color: #cc88ff"
+        if val == "other":   return "color: #888888"
+        return ""
+
+    def pnl_color(val) -> str:
+        if not val or val == "—":
+            return ""
+        try:
+            f = float(str(val).replace("%", ""))
+            return "color: #00cc66" if f > 0 else "color: #ff4455" if f < 0 else ""
+        except (TypeError, ValueError):
+            return ""
+
+    styled = df.style
+    if "Type" in df.columns:
+        styled = styled.map(type_color, subset=["Type"])
+    if "Status" in df.columns:
+        styled = styled.map(status_color, subset=["Status"])
+    if "P&L %" in df.columns:
+        styled = styled.map(pnl_color, subset=["P&L %"])
+    if "P&L $" in df.columns:
+        styled = styled.map(pnl_color, subset=["P&L $"])
+    if "Chg %" in df.columns:
+        styled = styled.map(pnl_color, subset=["Chg %"])
     return styled.hide(axis="index")
 
 
@@ -546,22 +600,175 @@ def main() -> None:
 
     st.title("Real-Time Scanner")
 
-    @st.fragment(run_every=REFRESH_INTERVAL)
-    def live_tables() -> None:
-        snapshot, updates = _get_live()
+    tab_scanner, tab_signals = st.tabs(["Scanner", "Signals"])
 
-        if not snapshot:
-            st.info("⏳ Connecting to stream…")
-            return
+    with tab_scanner:
+        @st.fragment(run_every=REFRESH_INTERVAL)
+        def live_tables() -> None:
+            snapshot, updates = _get_live()
 
-        for ac in asset_classes:
-            results = snapshot.get(ac, [])
-            updated = updates.get(ac)
-            with st.container(border=True):
-                _render_asset_class(ac, results, updated, sort_by, ascending, int(top_n))
+            if not snapshot:
+                st.info("⏳ Connecting to stream…")
+                return
+
+            for ac in asset_classes:
+                results = snapshot.get(ac, [])
+                updated = updates.get(ac)
+                with st.container(border=True):
+                    _render_asset_class(ac, results, updated, sort_by, ascending, int(top_n))
+                st.divider()
+
+        live_tables()
+
+    with tab_signals:
+        @st.fragment(run_every=REFRESH_INTERVAL)
+        def signals_table() -> None:
+            cache = _get_candle_cache()
+            if cache is None:
+                st.info("⏳ Candle cache not available (check MASSIVE_API_KEY).")
+                return
+
+            ts_now = datetime.now(_ET).strftime("%H:%M:%S")
+
+            def _dollar_pnl(s) -> float:
+                if s.entry_est <= 0:
+                    return 0.0
+                return s.entry_est * s.pnl_pct / 100
+
+            def _fmt_dollar(val: float) -> str:
+                if val == 0.0:
+                    return "—"
+                return f"{'$+' if val >= 0 else '-$'}{abs(val):.2f}"
+
+            def _sig_rows(signals) -> list[dict]:
+                rows = []
+                for s in signals:
+                    closed = s.closed_at.strftime("%H:%M") if s.closed_at else "—"
+                    rows.append({
+                        "Time":         s.triggered_at.strftime("%H:%M"),
+                        "Symbol":       s.symbol,
+                        "Strategy":     s.strategy,
+                        "TF":           s.timeframe,
+                        "Type":         s.type,
+                        "Status":       s.trade_status,
+                        "Entry Est.":   _p(s.entry_est),
+                        "SL":           _p(s.sl),
+                        "TP":           _p(s.tp),
+                        "R:R":          f"{s.rr:.1f}",
+                        "P&L $":        _fmt_dollar(_dollar_pnl(s)),
+                        "P&L %":        f"{s.pnl_pct:+.2f}%" if s.pnl_pct != 0.0 else "—",
+                        "Closed":       closed,
+                    })
+                return rows
+
+            # ── Pending signals (live bar, condition currently met) ───────────
+            pending = [s for s in cache.get_pending_signals() if s.entry_est >= 0.10]
+            st.markdown(f"**Pending** — conditions met in the current bar — _{ts_now}_")
+            if pending:
+                df_pending = pd.DataFrame(_sig_rows(pending))
+                st.dataframe(
+                    _style_signals_df(df_pending),
+                    use_container_width=True,
+                    height=min(40 + len(df_pending) * 35, 300),
+                    key="tbl_pending",
+                )
+            else:
+                st.caption("No pending signals in the current bar.")
+
+            # ── Launched signals (confirmed at bar close) ─────────────────────
             st.divider()
+            launched = [s for s in cache.get_signals() if s.entry_est >= 0.10]
+            st.markdown(f"**Launched** — confirmed at bar close — {len(launched)} today")
+            if launched:
+                df_launched = pd.DataFrame(_sig_rows(launched))
+                st.dataframe(
+                    _style_signals_df(df_launched),
+                    use_container_width=True,
+                    height=min(40 + len(df_launched) * 35, 500),
+                    key="tbl_launched",
+                )
+            else:
+                st.caption("No launched signals yet.")
 
-    live_tables()
+            # ── P&L summary (1 share per trade) ──────────────────────────────
+            if launched:
+                closed     = [s for s in launched if s.trade_status in ("tp", "sl", "timeout", "other")]
+                open_      = [s for s in launched if s.trade_status == "open"]
+                realized   = sum(_dollar_pnl(s) for s in closed)
+                unrealized = sum(_dollar_pnl(s) for s in open_)
+                total      = realized + unrealized
+
+                def _metric_color(val: float) -> str:
+                    if val > 0:  return "color:#00cc66"
+                    if val < 0:  return "color:#ff4455"
+                    return "color:#888888"
+
+                def _fmt(val: float) -> str:
+                    return f"{'$+' if val >= 0 else '-$'}{abs(val):.2f}"
+
+                col1, col2, col3 = st.columns(3)
+                col1.markdown(
+                    f"**Realized** ({len(closed)} trades)<br>"
+                    f"<span style='{_metric_color(realized)};font-size:1.3em;font-weight:bold'>{_fmt(realized)}</span>",
+                    unsafe_allow_html=True,
+                )
+                col2.markdown(
+                    f"**Unrealized** ({len(open_)} open)<br>"
+                    f"<span style='{_metric_color(unrealized)};font-size:1.3em;font-weight:bold'>{_fmt(unrealized)}</span>",
+                    unsafe_allow_html=True,
+                )
+                col3.markdown(
+                    f"**Total**<br>"
+                    f"<span style='{_metric_color(total)};font-size:1.3em;font-weight:bold'>{_fmt(total)}</span>",
+                    unsafe_allow_html=True,
+                )
+
+            # ── Candle cache overview ─────────────────────────────────────────
+            st.divider()
+            all_frames = cache.get_all()
+            if not all_frames:
+                st.info("⏳ Waiting for qualifying stocks (|Chg %| ≥ 40%)…")
+                return
+
+            snapshot, _ = _get_live()
+            quote_map = {r.quote.symbol: r.quote for r in snapshot.get("stocks", [])}
+
+            rows = []
+            for sym, tfs in sorted(
+                all_frames.items(),
+                key=lambda kv: abs((quote_map[kv[0]].change_pct) if kv[0] in quote_map else 0),
+                reverse=True,
+            ):
+                q = quote_map.get(sym)
+                row: dict = {"Symbol": sym}
+                row["Price"]   = _p(q.last)                                        if q else "—"
+                row["Chg %"]   = _pct(q.change_pct)                               if q else "—"
+                row["AH Open"] = _p(q.afterhours_open) if q and q.afterhours_open else "—"
+                for tf in ("5m", "15m"):
+                    df = tfs.get(tf)
+                    if df is not None and not df.empty:
+                        last = df.iloc[-1]
+                        row[f"SMA9 ({tf})"]   = _p(last.get("sma_9"))
+                        row[f"SMA200 ({tf})"] = _p(last.get("sma_200"))
+                        row[f"VWAP ({tf})"]   = _p(last.get("vwap"))
+                        row[f"Bars ({tf})"]   = len(df)
+                    else:
+                        row[f"SMA9 ({tf})"]   = "—"
+                        row[f"SMA200 ({tf})"] = "—"
+                        row[f"VWAP ({tf})"]   = "—"
+                        row[f"Bars ({tf})"]   = 0
+                rows.append(row)
+
+            df_cache = pd.DataFrame(rows)
+            st.markdown(f"**Stocks in cache** — {len(rows)} symbols")
+            st.dataframe(
+                _style_df(df_cache),
+                use_container_width=True,
+                height=min(40 + len(df_cache) * 35, 400),
+                key="tbl_cache_overview",
+            )
+
+        signals_table()
 
 
 if __name__ == "__main__":

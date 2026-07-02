@@ -13,10 +13,12 @@ def get_provider(name: str, settings: Settings, asset_class: str = "stocks") -> 
             return MoomooProvider(host=settings.moomoo_host, port=settings.moomoo_port)
         case "ibkr":
             from .ibkr.provider import IBKRProvider
+            syms = [s for s in settings.symbols_for(asset_class) if s != "*"]
             return IBKRProvider(
                 host=settings.ibkr_host,
                 port=settings.ibkr_port,
                 client_id=settings.ibkr_client_id,
+                symbols=syms,
             )
         case "webull":
             from .webull.provider import WebullProvider

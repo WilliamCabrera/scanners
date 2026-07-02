@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 import argparse
-import sys
 import threading
 import time
+from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")  # always load the project-root .env first
 
 from scanner.config.settings import Settings
 from scanner.core.filters import ChangePctFilter, PriceFilter, VolumeFilter
-from scanner.core.scanner import Scanner
+from scanner.core.scanner import Scanner, _SORT_FIELDS, DEFAULT_SORT
+from scanner.display.console import LiveDisplay
 from scanner.providers import get_provider
 from scanner.providers.massive.asset_classes import SUPPORTED as MASSIVE_ASSET_CLASSES
-from scanner.providers.massive.processors import get_processor
-from scanner.core.scanner import _SORT_FIELDS, DEFAULT_SORT
 from scanner.utils.logging_config import setup_logging
 
 
@@ -103,9 +105,10 @@ def main() -> None:
     setup_logging(log_level=settings.log_level)
 
     asset_classes = settings.massive_asset_classes
-    processors = {ac: get_processor(ac) for ac in asset_classes}
     providers = []
     scanners = []
+
+    display = LiveDisplay(title="Scanner", asset_classes=asset_classes)
 
     try:
         for ac in asset_classes:
@@ -118,7 +121,7 @@ def main() -> None:
                 symbols=settings.symbols_for(ac),
                 filters=_filters_for(ac),
                 interval=settings.scan_interval,
-                on_result=lambda results, ac=ac: None,
+                on_result=lambda results, ac=ac: display.update(ac, results),
                 limit=top_n,
                 ascending=ascending,
                 sort_by=sort_by,
@@ -129,8 +132,9 @@ def main() -> None:
                 target=s.run, daemon=True, name=f"scanner-{ac}"
             ).start()
 
-        while True:
-            time.sleep(1)
+        with display:
+            while True:
+                time.sleep(1)
 
     except KeyboardInterrupt:
         for s in scanners:

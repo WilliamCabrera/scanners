@@ -9,7 +9,7 @@ services:
       TZ: America/New_York
     volumes:
       - .:/app
-      - cache_data:/app/.cache
+      - ./.cache:/app/.cache
       - ./logs:/app/logs
     stdin_open: true
     tty: true
@@ -26,7 +26,7 @@ services:
       - "8505:8505"
     volumes:
       - .:/app
-      - cache_data:/app/.cache
+      - ./.cache:/app/.cache
       - ./logs:/app/logs
     depends_on:
       - scanner
@@ -41,7 +41,7 @@ services:
       TZ: America/New_York
     volumes:
       - .:/app
-      - cache_data:/app/.cache
+      - ./.cache:/app/.cache
       - ./logs:/app/logs
     labels:
       ofelia.enabled: "true"
@@ -63,5 +63,3 @@ services:
     depends_on:
       - jobs
 
-volumes:
-  cache_data:

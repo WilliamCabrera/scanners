@@ -19,12 +19,22 @@ Terminal-based live scanner that streams aggregate bars from the **Massive WebSo
    - [PremarketStore — Pre-Market Volume](#premarketstore--pre-market-volume)
 5. [Stocks Table — Column Reference](#stocks-table--column-reference)
 6. [Display](#display)
-7. [Configuration](#configuration)
-8. [Running the Scanner](#running-the-scanner)
-   - [Local (Python)](#local-python)
-   - [Docker Compose](#docker-compose)
-9. [CLI Reference](#cli-reference)
-10. [Adding a New Asset Class](#adding-a-new-asset-class)
+7. [Signal Engine & CandleCache](#signal-engine--candlecache)
+8. [Order Execution](#order-execution)
+   - [OrderProvider interface](#orderprovider-interface)
+   - [BracketRef](#bracketref)
+   - [IBKROrderProvider](#ibkrorderprovider)
+   - [MockOrderProvider](#mockorderprovider)
+   - [OrderExecutor](#orderexecutor)
+9. [Data Providers](#data-providers)
+   - [MassiveProvider](#massiveprovider)
+   - [IBKRProvider](#ibkrprovider)
+10. [Configuration](#configuration)
+11. [Running the Scanner](#running-the-scanner)
+    - [Local (Python)](#local-python)
+    - [Docker Compose](#docker-compose)
+12. [CLI Reference](#cli-reference)
+13. [Adding a New Asset Class](#adding-a-new-asset-class)
 
 ---
 
@@ -290,6 +300,232 @@ Both values are available at bar time — no lookahead bias. `gap_pct` and `retu
 - All tables are stacked vertically using `rich.console.Group`.
 - Refreshes at 2 Hz.
 - Color coding: `bright_green` for positive values, `bright_red` for negative, `white` for zero/missing.
+
+---
+
+## Signal Engine & CandleCache
+
+`scanner/core/signal_engine.py` + `scanner/core/candle_cache.py`
+
+The **CandleCache** listens to raw 5-minute bars from the data provider and maintains per-symbol OHLCV DataFrames enriched with SMA-9, SMA-200, and VWAP. It feeds the **SignalEngine** which evaluates strategy instances defined in `scanner/core/strategies.json`.
+
+```
+MassiveProvider.on_raw_bar(sym, O, H, L, C, V, end_ms)
+       │
+       ▼
+ CandleCache
+  ├── 5m + 15m DataFrames per symbol
+  ├── SMA-9, SMA-200, VWAP computed incrementally
+  └── SignalEngine.evaluate() called on every closed bar
+              │
+              ▼
+        list[Signal]   ← stored in cache, read by OrderExecutor
+```
+
+**Signal fields:**
+
+| Field | Description |
+|---|---|
+| `symbol` | Ticker |
+| `strategy` | Instance name from strategies.json |
+| `timeframe` | `"5m"` or `"15m"` |
+| `type` | `"long"` or `"short"` |
+| `entry_est` | Expected entry price (≈ open of next bar) |
+| `sl` | Stop-loss price |
+| `tp` | Take-profit price |
+| `status` | `"pending"` (live bar) or `"launched"` (bar closed) |
+| `trade_status` | `"open"` → `"tp"` / `"sl"` / `"eod"` |
+| `exit_price` | Filled by OrderExecutor on close |
+| `pnl_pct` | Realized P&L % filled by OrderExecutor on close |
+| `max_hold_hours` | Force-close after N hours (0 = no limit) |
+
+---
+
+## Order Execution
+
+Data and order providers are **fully independent** — any combination is valid:
+
+```
+DataProvider          OrderProvider
+IBKRProvider    ←──── IBKROrderProvider   (same or different broker)
+MassiveProvider ←──── IBKROrderProvider
+MassiveProvider ←──── MockOrderProvider   (paper / testing)
+```
+
+### OrderProvider interface
+
+`scanner/providers/order_base.py`
+
+```python
+class OrderProvider(ABC):
+    def connect(self) -> None
+    def disconnect(self) -> None
+    def is_connected(self) -> bool
+
+    def place_bracket(
+        self,
+        symbol:      str,
+        action:      str,        # "BUY" | "SELL"
+        quantity:    float,
+        entry_type:  str,        # "MKT" | "LMT"
+        entry_price: float,      # used when entry_type="LMT"
+        sl:          float,
+        tp:          float,
+    ) -> BracketRef
+
+    def refresh(self, ref: BracketRef, current_price: float = 0.0) -> BracketRef
+    def cancel(self, ref: BracketRef) -> None
+```
+
+### BracketRef
+
+`scanner/providers/order_base.py`
+
+Represents a placed bracket order. Opaque to the executor — provider-specific state lives in `_internal`.
+
+| Field | Description |
+|---|---|
+| `symbol` | Ticker |
+| `action` | `"BUY"` or `"SELL"` |
+| `quantity` | Shares |
+| `entry_type` | `"MKT"` or `"LMT"` |
+| `entry_price` | Requested entry |
+| `sl` / `tp` | Stop and target prices |
+| `fill_price` | Actual entry fill |
+| `exit_price` | Actual exit fill |
+| `status` | `pending` → `open` → `tp` / `sl` / `cancelled` |
+
+### IBKROrderProvider
+
+`scanner/providers/ibkr/order_provider.py`
+
+Connects to IB Gateway / TWS with a dedicated `clientId` (default `2`, separate from the data provider). Uses native IB bracket orders: entry order (MKT or LMT) with attached TP (LimitOrder) and SL (StopOrder). IB handles the exit automatically; `refresh()` polls trade status to detect fills.
+
+On `cancel()`: unfilled child orders are cancelled; if the entry was already filled, a MKT close order is placed to flatten the position.
+
+```python
+from scanner.providers.ibkr.order_provider import IBKROrderProvider
+
+op = IBKROrderProvider(host="127.0.0.1", port=4002, client_id=2)
+op.connect()
+ref = op.place_bracket("NVDA", "SELL", 10, "MKT", entry_price=130.0, sl=133.0, tp=124.0)
+```
+
+### MockOrderProvider
+
+`scanner/providers/mock/order_provider.py`
+
+No broker connection required. Entry fills instantly at `entry_price`. TP/SL are evaluated on each `refresh(ref, current_price)` call by comparing `current_price` against the bracket levels. Used for testing and simulation.
+
+```python
+from scanner.providers.mock.order_provider import MockOrderProvider
+
+op = MockOrderProvider()
+op.connect()
+ref = op.place_bracket("NVDA", "SELL", 10, "MKT", 130.0, sl=133.0, tp=124.0)
+ref = op.refresh(ref, current_price=123.5)  # ref.status → "tp"
+```
+
+### OrderExecutor
+
+`scanner/core/order_executor.py`
+
+Polls `signal_source.get_signals()` every `interval` seconds and places bracket orders for new `"launched"` signals. Tracks open positions, enforces `max_hold_hours`, and updates `Signal.trade_status` / `exit_price` / `pnl_pct` on close.
+
+**Simultaneity rule:** key is `(strategy_instance, timeframe, symbol)`. The same strategy instance + timeframe cannot re-enter a symbol while a position is open. Different strategies (or different timeframes of the same strategy) can hold simultaneous positions on the same symbol.
+
+```python
+from scanner.core.order_executor import OrderExecutor
+from scanner.providers.ibkr.order_provider import IBKROrderProvider
+
+order_provider = IBKROrderProvider(host="127.0.0.1", port=4002, client_id=2)
+order_provider.connect()
+
+executor = OrderExecutor(
+    order_provider=order_provider,
+    signal_source=candle_cache,    # get_signals() → list[Signal]
+    quote_source=massive_provider, # get_quote(symbol) → Quote (for refresh + timeout price)
+    quantity=10,
+    entry_type="MKT",              # "MKT" | "LMT"
+    interval=2.0,
+    on_fill=None,                  # optional callback(Signal, BracketRef) on close
+)
+executor.start()   # non-blocking daemon thread
+# ...
+executor.stop()
+```
+
+**Constructor parameters:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `order_provider` | — | Any `OrderProvider` implementation |
+| `signal_source` | — | Object with `get_signals() → list[Signal]` |
+| `quote_source` | — | Any `DataProvider` (for live prices) |
+| `quantity` | — | Shares per trade (sizing passed from outside) |
+| `entry_type` | `"MKT"` | `"MKT"` or `"LMT"` (uses `signal.entry_est` for LMT) |
+| `interval` | `2.0` | Seconds between poll cycles |
+| `on_fill` | `None` | Optional `(Signal, BracketRef) → None` callback on close |
+
+---
+
+## Data Providers
+
+### MassiveProvider
+
+`scanner/providers/massive/provider.py`
+
+Streams aggregate bars via Massive WebSocket. Supports wildcard subscription (`*`) for stocks. See [Architecture Overview](#architecture-overview) for full data flow.
+
+### IBKRProvider
+
+`scanner/providers/ibkr/provider.py`
+
+Streams live market data from IB Gateway or TWS via **ib_async**. Requires `pip install ib_async`.
+
+- Runs an asyncio event loop in a background daemon thread.
+- Calls `reqMktData()` for each symbol — IB pushes tick updates (bid, ask, last, volume, open, high, low, prev_close).
+- Cache is refreshed by a background poll coroutine every 0.5 s.
+- On-demand subscription: symbols not listed at construction time are subscribed automatically on first `get_quote()` call.
+- `get_bars(symbol, limit)` fetches historical 5-minute bars via `reqHistoricalData`.
+
+**Does not support wildcard `*`** — explicit symbol list required.
+
+**Limitations vs MassiveProvider:**
+
+| Field | MassiveProvider | IBKRProvider |
+|---|---|---|
+| `premarket_volume` | Computed via REST API | Approximated (volume before open tick) |
+| `prev_day_volume` (RVOL) | From DailyStore | Not available |
+| `market_cap` / `float` | From reference API | Not available |
+| Wildcard subscription | Yes (`*`) | No |
+
+**Port reference:**
+
+| Application | Paper | Live |
+| --- | --- | --- |
+| IB Gateway | `4002` | `4001` |
+| TWS | `7497` | `7496` |
+
+```python
+from scanner.providers.ibkr.provider import IBKRProvider
+
+dp = IBKRProvider(host="127.0.0.1", port=4002, client_id=1, symbols=["AAPL", "NVDA"])
+dp.connect()
+quote = dp.get_quote("AAPL")
+bars  = dp.get_bars("AAPL", limit=50)
+dp.disconnect()
+```
+
+**`.env` for IBKR data provider:**
+
+```env
+SCANNER_PROVIDER=ibkr
+IBKR_HOST=127.0.0.1
+IBKR_PORT=4002
+IBKR_CLIENT_ID=1
+SCANNER_SYMBOLS_STOCKS=AAPL,NVDA,TSLA
+```
 
 ---
 
