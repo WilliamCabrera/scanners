@@ -677,8 +677,28 @@ def main() -> None:
 
             # ── Launched signals (confirmed at bar close) ─────────────────────
             st.divider()
-            launched = [s for s in cache.get_signals() if s.entry_est >= 0.10]
-            st.markdown(f"**Launched** — confirmed at bar close — {len(launched)} today")
+            launched_all = [s for s in cache.get_signals() if s.entry_est >= 0.10]
+
+            col_title, col_filter = st.columns([4, 1])
+            with col_title:
+                st.markdown(f"**Launched** — confirmed at bar close — {len(launched_all)} today")
+            with col_filter:
+                direction = st.pills(
+                    "Direction",
+                    options=["All", "Long", "Short"],
+                    default=st.session_state.get("sig_direction", "All"),
+                    key="sig_direction",
+                    label_visibility="collapsed",
+                )
+
+            # Apply visual filter — underlying data (launched_all) is never modified
+            if direction == "Long":
+                launched = [s for s in launched_all if s.type == "long"]
+            elif direction == "Short":
+                launched = [s for s in launched_all if s.type == "short"]
+            else:
+                launched = launched_all
+
             if launched:
                 df_launched = pd.DataFrame(_sig_rows(launched))
                 st.dataframe(
@@ -690,7 +710,7 @@ def main() -> None:
             else:
                 st.caption("No launched signals yet.")
 
-            # ── P&L summary (1 share per trade) ──────────────────────────────
+            # ── P&L summary — reflects current direction filter ───────────────
             if launched:
                 closed     = [s for s in launched if s.trade_status in ("tp", "sl", "timeout", "other")]
                 open_      = [s for s in launched if s.trade_status == "open"]
